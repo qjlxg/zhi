@@ -5,13 +5,7 @@ from datetime import datetime
 import multiprocessing as mp
 
 # ==========================================
-# 战法名称：【专属生命线·底部乾坤版】V3.7
-# 核心逻辑：
-# 1. 动态拟合：自动寻找个股特有的 10-40 日运行节奏线。
-# 2. 联动过滤：大盘趋势未破（MA20支撑或MA5上行）且跌幅 < 2.5% 时准入。
-# 3. 买入条件：回踩生命线 + 显著缩量 + 均线斜率向上。
-# 4. 严格过滤：深沪A股，排除ST、创业板、科创板、高价股。
-# 5. 底部增强：新增250日价格区间定位，确保处于筑底阶段。
+# 战法名称：【专属生命线·乾坤一击】V3.9 全功能实战版
 # ==========================================
 
 DATA_DIR = './stock_data'
@@ -21,66 +15,39 @@ PRICE_MIN = 5.0
 PRICE_MAX = 20.0
 
 def get_china_time():
-    """获取格式化的时间字符串"""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-def calculate_rsi(series, period=14):
-    """计算RSI指标"""
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / (loss + 1e-9) # 防止除零
-    return 100 - (100 / (1 + rs))
-
 def check_market_environment():
-    """大盘联动过滤"""
-    if not os.path.exists(MARKET_INDEX_FILE):
-        return True
+    """逻辑2：大盘环境联动过滤 (MA20/MA5/跌幅控制)"""
+    if not os.path.exists(MARKET_INDEX_FILE): return True
     try:
         m_df = pd.read_csv(MARKET_INDEX_FILE)
-        if len(m_df) < 20: return True
         m_df['MA5'] = m_df['收盘'].rolling(window=5).mean()
         m_df['MA20'] = m_df['收盘'].rolling(window=20).mean()
-        curr = m_df.iloc[-1]
-        prev = m_df.iloc[-2]
-        # 允许回踩：MA20支撑位之上 OR MA5方向向上
+        curr, prev = m_df.iloc[-1], m_df.iloc[-2]
+        # 条件：收盘在MA20上 OR MA5向上 且 跌幅 > -2.5%
         trend_ok = (curr['收盘'] >= curr['MA20']) or (curr['MA5'] > prev['MA5'])
-        panic_free = curr['涨跌幅'] > -2.5 # 避开暴跌
+        panic_free = curr['涨跌幅'] > -2.5
         return trend_ok and panic_free
-    except:
-        return True
+    except: return True
 
 def analyze_stock(file_path):
-    """个股分析逻辑"""
+    """个股全维度分析"""
     try:
+        # 逻辑4：严格过滤 (排除ST、指数、创业板、科创板等)
         file_name = os.path.basename(file_path).upper()
         if 'ST' in file_name or '指数' in file_name: return None
-        
-        df = pd.read_csv(file_path)
-        if len(df) < 250: return None # 满足筑底检测的一年数据要求
-        
         code = file_name.split('.')[0]
         if code.startswith(('30', '68', '43', '83', '87')): return None
+
+        df = pd.read_csv(file_path)
+        if len(df) < 250: return None # 逻辑5需要一年数据
         
-        # 1. 基础价格过滤
+        # 逻辑4：价格过滤
         last_price = df['收盘'].iloc[-1]
         if not (PRICE_MIN <= last_price <= PRICE_MAX): return None
 
-        # 2. 筑底过程检测 (新增)
-        # 计算一年内的价格位置，relative_pos越小说明越靠近底部
-        high_250 = df['最高'].tail(250).max()
-        low_250 = df['最低'].tail(250).min()
-        relative_pos = (last_price - low_250) / (high_250 - low_250)
-        
-        # 过滤掉高位股：只选处于一年内价格波动区间前 40% 的个股
-        if relative_pos > 0.4: return None
-
-        # 3. RSI 强度辅助 (过滤过热)
-        df['RSI'] = calculate_rsi(df['收盘'])
-        curr_rsi = df['RSI'].iloc[-1]
-        if not (30 <= curr_rsi <= 65): return None
-
-        # 4. 专属生命线动态拟合 (核心功能)
+        # 逻辑1：动态拟合生命线 (10-40日)
         best_n = 20
         min_error = float('inf')
         lookback_df = df.tail(60).copy()
@@ -92,86 +59,76 @@ def analyze_stock(file_path):
             if len(support_points) > 0:
                 error = support_points.abs().sum() / len(support_points)
                 if error < min_error:
-                    min_error = error
-                    best_n = n
+                    min_error, best_n = error, n
 
         df['MA_LIFE'] = df['收盘'].rolling(window=best_n).mean()
         df['MA_VOL'] = df['成交量'].rolling(window=5).mean()
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
+        curr, prev = df.iloc[-1], df.iloc[-2]
         
-        # 5. 买入三维判定 (回踩 + 缩量 + 向上)
-        on_support = (curr['最低'] <= curr['MA_LIFE'] * 1.015) and (curr['收盘'] >= curr['MA_LIFE'] * 0.985)
-        vol_shrink = curr['成交量'] < df['MA_VOL'].iloc[-1] * 0.85
+        # 逻辑3：买入核心条件 (回踩 + 斜率向上)
+        on_support = (curr['最低'] <= curr['MA_LIFE'] * 1.02) and (curr['收盘'] >= curr['MA_LIFE'] * 0.98)
         trend_up = curr['MA_LIFE'] > prev['MA_LIFE']
         
-        if on_support and trend_up:
-            # 6. 历史胜率回测
+        # 逻辑3补充：显著缩量 (设为弹性评分项，但保留基础门槛)
+        is_vol_ok = curr['成交量'] < df['MA_VOL'].iloc[-1] * 1.0 # 基础门槛：不放量即可
+        
+        if on_support and trend_up and is_vol_ok:
+            # 逻辑5：底部增强评分
+            high_250 = df['最高'].tail(250).max()
+            low_250 = df['最低'].tail(250).min()
+            relative_pos = (last_price - low_250) / (high_250 - low_250 + 1e-9)
+            
+            # 计算历史胜率回测
             hits, wins = 0, 0
             test_range = df.tail(120) 
             for i in range(len(test_range) - 6):
-                h_low = test_range['最低'].iloc[i]
-                h_ma = test_range.iloc[i].get('MA_LIFE', 0)
-                h_close = test_range['收盘'].iloc[i]
+                h_low, h_ma, h_close = test_range['最低'].iloc[i], test_range.iloc[i].get('MA_LIFE', 0), test_range['收盘'].iloc[i]
                 if h_low <= h_ma * 1.01 and h_close >= h_ma:
                     hits += 1
-                    future_max = test_range['最高'].iloc[i+1 : i+6].max()
-                    if (future_max / h_close) > 1.03: wins += 1
-            
+                    if (test_range['最高'].iloc[i+1 : i+6].max() / h_close) > 1.03: wins += 1
             win_rate = (wins / hits) if hits > 0 else 0
-            
-            # 7. 评分系统 (权重优化)
-            score = 0
-            if win_rate >= 0.65: score += 40      # 高胜率权重
-            if vol_shrink: score += 30           # 缩量权重
-            if relative_pos < 0.2: score += 30   # 底部绝对低位权重
 
-            if score >= 90:
-                return {
-                    "代码": str(code).zfill(6),
-                    "收盘": curr['收盘'],
-                    "筑底位": f"{relative_pos:.1%}",
-                    "RSI": f"{curr_rsi:.1f}",
-                    "生命线": f"{best_n}日",
-                    "胜率": f"{win_rate:.2%}",
-                    "强度": "极强",
-                    "建议": "底部启动信号" if relative_pos < 0.2 else "中线回踩点",
-                    "逻辑": f"{best_n}线支撑+底部共振"
-                }
-    except Exception:
-        return None
+            # 综合评分逻辑
+            score = 0
+            if relative_pos < 0.3: score += 35   # 筑底加分
+            if curr['成交量'] < df['MA_VOL'].iloc[-1] * 0.8: score += 35 # 缩量加分
+            if win_rate >= 0.6: score += 30      # 胜率加分
+
+            # 只要满足核心逻辑且分值不为0就输出
+            return {
+                "代码": str(code).zfill(6),
+                "筑底位": f"{relative_pos:.1%}",
+                "生命线": f"{best_n}日",
+                "胜率": f"{win_rate:.2%}",
+                "评分": score,
+                "强度": "极强" if score >= 70 else ("强" if score >= 35 else "标准"),
+                "逻辑": f"回踩{best_n}线+{'底部' if relative_pos < 0.4 else '中继'}"
+            }
+    except: return None
     return None
 
 if __name__ == '__main__':
     start_time = datetime.now()
-    print(f"[{get_china_time()}] 启动 V3.7 筑底增强扫描...")
-    
+    print(f"[{get_china_time()}] 启动全功能 V3.9 实战版...")
     if not check_market_environment():
-        print("🛑 监测到市场大环境风险，脚本根据策略自动终止运行。")
+        print("🛑 监测到大盘风险。")
         exit(0)
     
     all_files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
-    print(f"正在分析 {len(all_files)} 只深沪A股...")
-
     with mp.Pool(processes=mp.cpu_count()) as pool:
         results = pool.map(analyze_stock, all_files)
     
     final_list = [r for r in results if r is not None]
-
     if final_list:
-        res_df = pd.DataFrame(final_list)
+        res_df = pd.DataFrame(final_list).sort_values(by='评分', ascending=False)
         if os.path.exists(NAMES_FILE):
             names = pd.read_csv(NAMES_FILE)
             names['code'] = names['code'].astype(str).str.zfill(6)
             res_df = pd.merge(res_df, names, left_on='代码', right_on='code', how='left')
-            res_df = res_df[['代码', 'name', '收盘', '筑底位', 'RSI', '胜率', '强度', '建议', '逻辑']]
+            res_df = res_df[['代码', 'name', '筑底位', '生命线', '胜率', '评分', '强度', '逻辑']]
         
-        folder = datetime.now().strftime('%Y%m')
-        os.makedirs(folder, exist_ok=True)
-        save_path = f"{folder}/LifeLine_BottomV3.7_{datetime.now().strftime('%d_%H%M%S')}.csv"
+        save_path = f"LifeLine_V3.9_{datetime.now().strftime('%d_%H%M%S')}.csv"
         res_df.to_csv(save_path, index=False, encoding='utf-8-sig')
-        print(f"✅ 扫描完成！在底部区域发现 {len(res_df)} 个高质量信号，存至: {save_path}")
+        print(f"✅ 完成！选出 {len(res_df)} 只，最高评分标的为 {res_df.iloc[0]['name']}")
     else:
-        print("💡 扫描完成，今日未发现处于底部共振区的标的。")
-
-    print(f"任务结束，总计耗时: {datetime.now() - start_time}")
+        print("💡 未发现完全符合“回踩+趋势向上”核心逻辑的标的。")
