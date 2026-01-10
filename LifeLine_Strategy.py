@@ -100,7 +100,7 @@ def analyze_stock(file_path):
                 strength = "中"
                 action = "小仓位观察"
 
-            if score >= 70: # 只输出高质量结果
+            if score >= 0 # 只输出高质量结果
                 return {
                     "代码": code,
                     "最优周期": best_n,
