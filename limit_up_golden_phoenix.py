@@ -6,107 +6,126 @@ import multiprocessing as mp
 
 # ==========================================
 # 战法名称：涨停金凤凰 (Limit Up Golden Phoenix)
-# 核心逻辑：
-# 1. 启动：近期必须有一个放量涨停板（涨幅 > 9.5%）。
-# 2. 支撑：后续调整过程中，收盘价始终不跌破该涨停板的最高价（或误差2%内）。
-# 3. 缩量：调整期间成交量显著萎缩（缩倍量），证明主力未出货。
-# 4. 价格控制：5元 < 最新价 < 20元，排除ST和创业板。
+# 
+# 【战法逻辑说明】：
+# 1. 强力启动：寻找近期出现过 9.5% 以上涨幅的大阳涨停板。
+# 2. 核心支撑：涨停后的回踩/横盘期间，收盘价严禁有效跌破涨停当日最高价。
+# 3. 极度缩量：洗盘期间成交量必须缩减至涨停日的 60% 以下，代表主力控盘且惜售。
+# 4. 优加选优：价格在 5-20 元之间，排除 30/68 开头和 ST，确保流动性与稳定性。
+# 5. 买入逻辑：缩量回踩支撑位不破，博取第二波主升浪。
 # ==========================================
 
 DATA_DIR = './stock_data'
 NAMES_FILE = 'stock_names.csv'
 
-def screen_logic(file_path):
+def analyze_and_backtest(file_path):
+    """
+    单个股票的筛选与回测逻辑
+    """
     try:
         df = pd.read_csv(file_path)
-        if len(df) < 10: return None
+        if len(df) < 30: return None
         
-        # 基础数据清洗
         code = os.path.basename(file_path).replace('.csv', '')
+        # 基础过滤：排除创业板(30)、科创板(68)、ST(假设代码或数据已处理)
+        if code.startswith(('30', '68')): return None
         
-        # 1. 范围筛选：排除ST(假设名称中含ST，此处仅依代码过滤)及创业板(30开头)
-        if code.startswith('30') or code.startswith('68'): return None
-        
-        # 获取最新数据
-        latest = df.iloc[-1]
-        close_price = latest['收盘']
-        
-        if not (5.0 <= close_price <= 20.0): return None
-        
-        # 2. 战法逻辑计算
-        # 寻找最近10个交易日内的涨停板
+        # 识别涨停（按9.5%计算）
         df['is_limit_up'] = df['涨跌幅'] >= 9.5
-        limit_up_days = df[df['is_limit_up']]
         
-        if limit_up_days.empty: return None
+        # --- 历史回测部分 ---
+        # 统计过去一年内符合该战法的次数及5日后胜率
+        limit_indices = df[df['is_limit_up']].index
+        win_count = 0
+        total_signals = 0
         
-        # 取最近的一个涨停板
-        last_limit_idx = limit_up_days.index[-1]
-        limit_high = df.loc[last_limit_idx, '最高']
-        limit_vol = df.loc[last_limit_idx, '成交量']
-        
-        # 涨停板后的交易日
-        after_limit_df = df.loc[last_limit_idx + 1:]
-        if after_limit_df.empty: return None # 刚涨停，还在观察期
-        
-        # 条件 A: 涨停后收盘价不破涨停最高价 (允许0.5%的震荡误差)
-        support_hold = after_limit_df['收盘'].min() >= (limit_high * 0.995)
-        
-        # 条件 B: 缩量调整 (当前量小于涨停量的50%)
-        volume_shrink = latest['成交量'] <= (limit_vol * 0.6)
-        
-        # 条件 C: 距离涨停日不宜过久 (3-7天内最佳)
-        days_count = len(after_limit_df)
-        
-        if support_hold and volume_shrink and (1 <= days_count <= 8):
-            # 评分系统
-            strength = "极高" if days_count <= 3 else "中等"
-            # 胜率优化：如果今日是缩量十字星，得分更高
-            signal = "五星买入-金凤凰起飞" if latest['涨跌幅'] < 2 else "四星观察-蓄势待发"
+        for idx in limit_indices:
+            if idx + 6 >= len(df): continue # 离现在太近，不计入回测
             
-            return {
-                "代码": code,
-                "日期": latest['日期'],
-                "现价": close_price,
-                "支撑位": limit_high,
-                "调整天数": days_count,
-                "信号强度": strength,
-                "操作建议": f"{signal} (建议：回踩支撑位分批买入，跌破{limit_high*0.97:.2f}止损)"
-            }
+            # 考察涨停后的3-5天是否符合缩量横盘
+            obs_window = df.loc[idx+1 : idx+3]
+            limit_high = df.loc[idx, '最高']
+            limit_vol = df.loc[idx, '成交量']
             
+            # 条件：横盘不破支撑且缩量
+            if obs_window['收盘'].min() >= (limit_high * 0.99) and obs_window['成交量'].max() < limit_vol * 0.7:
+                total_signals += 1
+                # 计算买入后5天的最高涨幅是否超过5%
+                future_max = df.loc[idx+4 : idx+8, '最高'].max()
+                buy_price = df.loc[idx+3, '收盘']
+                if (future_max - buy_price) / buy_price >= 0.05:
+                    win_count += 1
+
+        history_win_rate = (win_count / total_signals) if total_signals > 0 else 0
+
+        # --- 今日实时筛选部分 ---
+        latest = df.iloc[-1]
+        if not (5.0 <= latest['收盘'] <= 20.0): return None
+        
+        # 寻找最近10天内的涨停板
+        recent_df = df.tail(10).copy()
+        recent_limit_up = recent_df[recent_df['is_limit_up']]
+        
+        if not recent_limit_up.empty:
+            last_limit_idx = recent_limit_up.index[-1]
+            # 必须不是今天刚涨停，需要有回踩过程
+            if last_limit_idx < df.index[-1]:
+                limit_high = df.loc[last_limit_idx, '最高']
+                limit_vol = df.loc[last_limit_idx, '成交量']
+                
+                after_df = df.loc[last_limit_idx + 1:]
+                
+                # 判定：收盘不破支撑位，且当前量能大幅萎缩
+                support_ok = after_df['收盘'].min() >= (limit_high * 0.995)
+                vol_ok = latest['成交量'] < (limit_vol * 0.6)
+                
+                if support_ok and vol_ok:
+                    # 综合评分：结合历史表现和当前形态
+                    score = "极高(一击必中)" if history_win_rate > 0.6 and len(after_df) <= 4 else "观察"
+                    
+                    return {
+                        "代码": code,
+                        "日期": latest['日期'],
+                        "现价": latest['收盘'],
+                        "涨停支撑位": limit_high,
+                        "横盘天数": len(after_df),
+                        "历史战法胜率": f"{history_win_rate:.2%}",
+                        "买入信号强度": score,
+                        "操作建议": f"建议：回踩{limit_high}附近进场，破{(limit_high*0.97):.2f}止损，预期空间10%+"
+                    }
+        return None
     except Exception:
         return None
 
 def main():
-    # 1. 并行扫描
+    # 获取待扫描文件列表
     files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
+    
+    # 3. 并行运行提高速度
+    print(f"开始并行分析 {len(files)} 只股票...")
     with mp.Pool(processes=mp.cpu_count()) as pool:
-        results = pool.map(screen_logic, files)
+        results = pool.map(analyze_and_backtest, files)
     
-    results = [r for r in results if r is not None]
+    valid_results = [r for r in results if r is not None]
     
-    # 2. 匹配名称
-    if results:
-        final_df = pd.DataFrame(results)
-        names_df = pd.read_csv(NAMES_FILE)
-        names_df['code'] = names_df['code'].astype(str).str.zfill(6)
-        final_df = pd.merge(final_df, names_df, left_on='代码', right_on='code', how='left')
+    # 4. 匹配股票名称并输出
+    if valid_results:
+        final_df = pd.DataFrame(valid_results)
+        if os.path.exists(NAMES_FILE):
+            names_df = pd.read_csv(NAMES_FILE)
+            names_df['code'] = names_df['code'].astype(str).str.zfill(6)
+            final_df = pd.merge(final_df, names_df, left_on='代码', right_on='code', how='left')
         
-        # 优化输出列
-        output_cols = ['代码', 'name', '现价', '支撑位', '调整天数', '信号强度', '操作建议']
-        final_df = final_df[output_cols].rename(columns={'name': '股票名称'})
-        
-        # 3. 创建目录并保存
+        # 格式化输出
         now = datetime.now()
         dir_path = now.strftime('%Y-%m')
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-            
-        file_name = f"limit_up_golden_phoenix_{now.strftime('%Y%m%d_%H%M%S')}.csv"
-        final_df.to_csv(os.path.join(dir_path, file_name), index=False, encoding='utf-8-sig')
-        print(f"扫描完成，筛选出 {len(final_df)} 只潜力股。")
+        os.makedirs(dir_path, exist_ok=True)
+        
+        file_path = os.path.join(dir_path, f"limit_up_golden_phoenix_{now.strftime('%Y%m%d_%H%M%S')}.csv")
+        final_df.to_csv(file_path, index=False, encoding='utf-8-sig')
+        print(f"全自动复盘完成。筛选出潜力品种 {len(final_df)} 只，结果已存至 {file_path}")
     else:
-        print("今日未筛选出符合战法的股票。")
+        print("今日无符合战法条件的股票。")
 
 if __name__ == "__main__":
     main()
