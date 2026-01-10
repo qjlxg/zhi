@@ -1,84 +1,61 @@
+import requests
+import feedparser
 import os
-import asyncio
 from datetime import datetime
-from playwright.async_api import async_playwright
 
-async def search_zhihu():
-    keyword = "ETF"
-    results = []
+def search_zhihu_rss(keyword):
+    # 使用公开的 RSSHub 实例。如果这个域名失效，可以更换其他镜像
+    # 接口文档：https://docs.rsshub.app/routes/social-media#zhi-hu-sou-suo
+    rss_url = f"https://rsshub.app/zhihu/search/{keyword}"
     
-    async with async_playwright() as p:
-        # 这里的参数非常关键：禁用自动化特征
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1280, 'height': 800}
-        )
-        
-        page = await context.new_page()
-        
-        # 注入脚本，抹除 webdriver 特征
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    print(f"正在通过 RSSHub 获取数据: {rss_url}")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
-        try:
-            url = f"https://www.zhihu.com/search?q={keyword}&type=content"
-            print(f"正在访问: {url}")
-            
-            # 延长超时并模拟真人等待
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            
-            # 模拟向下滚动一屏，触发懒加载
-            await page.mouse.wheel(0, 500)
-            await asyncio.sleep(2) 
+    try:
+        response = requests.get(rss_url, headers=headers, timeout=30)
+        if response.status_code != 200:
+            print(f"RSSHub 响应异常: {response.status_code}")
+            return []
 
-            # 检查是否遇到了验证码
-            if "安全验证" in await page.content():
-                print("检测到验证码拦截！")
-                await page.screenshot(path="data/error_captcha.png")
-                return []
+        # 解析 RSS 内容
+        feed = feedparser.parse(response.text)
+        results = []
 
-            # 等待结果，尝试使用更通用的选择器
-            try:
-                await page.wait_for_selector(".SearchResult-Card", timeout=15000)
-            except:
-                print("未找到结果卡片，尝试保存截图诊断...")
-                await page.screenshot(path="data/debug_page.png")
-                return []
+        for entry in feed.entries[:10]:  # 获取前10条
+            results.append({
+                "title": entry.title,
+                "url": entry.link,
+                "date": entry.published if 'published' in entry else "未知时间",
+                "summary": entry.summary[:200] if 'summary' in entry else "无摘要"
+            })
+        return results
 
-            items = await page.query_selector_all(".SearchResult-Card")
-            for item in items[:10]:
-                title_el = await item.query_selector(".ContentItem-title")
-                excerpt_el = await item.query_selector(".RichText")
-                
-                if title_el:
-                    title = await title_el.inner_text()
-                    link_el = await title_el.query_selector("a")
-                    link = await link_el.get_attribute("href") if link_el else ""
-                    if link and link.startswith("//"): link = "https:" + link
-                    elif link and link.startswith("/"): link = "https://www.zhihu.com" + link
-                    
-                    excerpt = await excerpt_el.inner_text() if excerpt_el else ""
-                    results.append({"title": title, "url": link, "excerpt": excerpt[:200]})
-                    
-        except Exception as e:
-            print(f"抓取异常: {e}")
-        finally:
-            await browser.close()
-    return results
+    except Exception as e:
+        print(f"发生错误: {e}")
+        return []
 
-def save_to_markdown(results):
+def save_results(results):
     os.makedirs("data", exist_ok=True)
-    date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
+    date_str = datetime.now().strftime("%Y-%m-%d")
     filename = f"data/zhihu_etf_{date_str}.md"
+    
     with open(filename, "w", encoding="utf-8") as f:
-        f.write(f"# 知乎 ETF 搜索结果 ({date_str})\n\n")
+        f.write(f"# 知乎 ETF 专题监控 ({date_str})\n\n")
         if not results:
-            f.write("未能抓取到结果。请检查 data 目录下的 debug_page.png 截图。")
+            f.write("本次运行未发现新内容或服务暂时不可用。\n")
         else:
             for idx, item in enumerate(results, 1):
-                f.write(f"### {idx}. {item['title']}\n- [原文链接]({item['url']})\n- 摘要: {item['excerpt']}\n\n")
-    print(f"保存成功: {filename}")
+                f.write(f"### {idx}. {item['title']}\n")
+                f.write(f"- **发布时间**: {item['date']}\n")
+                f.write(f"- **原文链接**: [点击查看]({item['url']})\n")
+                f.write(f"- **摘要**: {item['summary']}...\n\n")
+                f.write("---\n")
+    
+    print(f"结果已成功写入: {filename}")
 
 if __name__ == "__main__":
-    res = asyncio.run(search_zhihu())
-    save_to_markdown(res)
+    data = search_zhihu_rss("ETF")
+    save_results(data)
