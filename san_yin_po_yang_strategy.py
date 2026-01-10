@@ -40,8 +40,8 @@ def analyze_stock(file_path, name_map):
         # 计算20日均线
         df['MA20'] = df['收盘'].rolling(window=20).mean()
         
-        # 寻找最近10个交易日内的涨停板 (涨幅 > 9.8%)
-        limit_up_idx = df.tail(15)[df.tail(15)['涨跌幅'] >= 9.8].index
+        # 寻找最近20个交易日内的涨停板 (涨幅 > 9.8%)
+        limit_up_idx = df.tail(20)[df.tail(20)['涨跌幅'] >= 9.8].index
         if limit_up_idx.empty: return None
         
         last_limit_idx = limit_up_idx[-1]
