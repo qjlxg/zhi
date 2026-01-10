@@ -1,56 +1,74 @@
-import requests
 import os
+import asyncio
 from datetime import datetime
+from playwright.async_api import async_playwright
 
-def search_zhihu(keyword):
-    # 使用更接近浏览器的 Header
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Host": "www.zhihu.com"
-    }
+async def search_zhihu():
+    keyword = "ETF"
+    results = []
     
-    # 改用网页版搜索接口进行尝试
-    url = f"https://www.zhihu.com/search?q={keyword}&type=content"
-    
-    try:
-        # 使用 Session 自动处理一些 Cookie 逻辑
-        session = requests.Session()
-        response = session.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+    async with async_playwright() as p:
+        # 启动浏览器
+        browser = await p.chromium.launch(headless=True)
+        # 设置模拟手机或桌面端的 User-Agent
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
         
-        # 如果 API 404，我们尝试简单的解析或者记录状态
-        print(f"成功访问知乎搜索页，状态码: {response.status_code}")
-        
-        # 这里为了演示，我们先创建一个带有时间戳的占位文件，确保 workflow 不会因目录缺失报错
-        return [{"title": "搜索任务已执行", "url": url, "excerpt": f"当前时间: {datetime.now()}"}]
-        
-    except Exception as e:
-        print(f"抓取失败: {e}")
-        return []
+        try:
+            # 访问搜索页
+            url = f"https://www.zhihu.com/search?q={keyword}&type=content"
+            print(f"正在访问: {url}")
+            await page.goto(url, wait_until="networkidle")
+            
+            # 等待搜索结果列表加载 (知乎结果卡片的类名通常包含 ContentItem)
+            await page.wait_for_selector(".SearchResult-Card", timeout=10000)
+            
+            # 提取数据
+            items = await page.query_selector_all(".SearchResult-Card")
+            for item in items[:10]: # 取前10条
+                title_el = await item.query_selector(".ContentItem-title")
+                excerpt_el = await item.query_selector(".RichText")
+                
+                if title_el:
+                    title = await title_el.inner_text()
+                    # 获取链接：查找 a 标签
+                    link_el = await title_el.query_selector("a")
+                    link = await link_el.get_attribute("href") if link_el else ""
+                    if link and link.startswith("//"): link = "https:" + link
+                    
+                    excerpt = await excerpt_el.inner_text() if excerpt_el else "无摘要"
+                    
+                    results.append({
+                        "title": title,
+                        "url": link,
+                        "excerpt": excerpt[:200] # 截取部分摘要
+                    })
+            
+        except Exception as e:
+            print(f"Playwright 抓取过程中出错: {e}")
+        finally:
+            await browser.close()
+            
+    return results
 
-def save_results(results):
-    # 【修复重点】无论是否抓取成功，都确保 data 目录存在
+def save_to_markdown(results):
     os.makedirs("data", exist_ok=True)
-    
     date_str = datetime.now().strftime("%Y-%m-%d_%H%M")
     filename = f"data/zhihu_etf_{date_str}.md"
     
-    if not results:
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(f"# 搜索记录 ({date_str})\n\n抓取失败，请检查知乎反爬策略或更新 Headers。")
-        return
-
     with open(filename, "w", encoding="utf-8") as f:
         f.write(f"# 知乎 ETF 搜索结果 ({date_str})\n\n")
-        for idx, item in enumerate(results, 1):
-            f.write(f"### {idx}. {item['title']}\n")
-            f.write(f"- **链接**: {item['url']}\n")
-            f.write(f"- **摘要**: {item['excerpt']}\n\n")
-    
-    print(f"结果已保存至 {filename}")
+        if not results:
+            f.write("未能抓取到结果，可能是被验证码拦截。")
+        else:
+            for idx, item in enumerate(results, 1):
+                f.write(f"### {idx}. {item['title']}\n")
+                f.write(f"- [查看文章]({item['url']})\n")
+                f.write(f"- **摘要**: {item['excerpt']}\n\n")
+    print(f"成功保存: {filename}")
 
 if __name__ == "__main__":
-    search_results = search_zhihu("ETF")
-    save_results(search_results)
+    data = asyncio.run(search_zhihu())
+    save_to_markdown(data)
