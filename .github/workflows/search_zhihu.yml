@@ -24,11 +24,24 @@ jobs:
         with:
           python-version: '3.9'
 
+      - name: Cache Playwright Browsers
+        id: playwright-cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('search_zhihu.py') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install dependencies
         run: |
           pip install playwright
-          # 安装系统级依赖库
-          python -m playwright install --with-deps chromium
+          # 必须安装系统级依赖，否则浏览器无法在 Linux 下启动
+          python -m playwright install-deps chromium
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
 
       - name: Run search script
         run: python search_zhihu.py
@@ -38,13 +51,13 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 确保 data 目录存在，防止 git add 失败
           mkdir -p data
-          git add data/
+          # 这样写可以同时 add md 文件和 png 截图
+          git add data/*.md data/*.png || true
           
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Auto-update ETF results: $(date +'%Y-%m-%d %H:%M')"
+            git commit -m "Auto-update ETF results & debug info: $(date +'%Y-%m-%d %H:%M')"
             git push
           fi
