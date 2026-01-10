@@ -135,7 +135,7 @@ def analyze_stock(file_path):
             if vol_shrink: score += 30
             if curr['涨跌幅'] < 2.5: score += 30 
 
-            if score >= 90:
+            if score >= 95:
                 return {
                     "代码": str(code).zfill(6),
                     "生命线": f"{best_n}日",
