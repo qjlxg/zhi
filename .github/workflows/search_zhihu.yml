@@ -1,0 +1,44 @@
+name: Search Zhihu ETF
+
+on:
+  push:
+    paths:
+      - 'search_zhihu.py'            # 当脚本修改时触发
+      - '.github/workflows/search_zhihu.yml'    # 当工作流文件修改时触发
+  schedule:
+    - cron: '0 2 * * *'             # 每天定时运行
+  workflow_dispatch:                 # 保留手动触发按钮
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run search script
+        run: python search_zhihu.py
+
+      - name: Commit and Push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/
+          # 检查是否有内容变更，避免空提交报错
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update ETF results: $(date +'%Y-%m-%d %H:%M')"
+            git push
+          fi
