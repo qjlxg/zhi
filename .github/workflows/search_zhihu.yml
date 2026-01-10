@@ -3,11 +3,11 @@ name: Search Zhihu ETF
 on:
   push:
     paths:
-      - 'search_zhihu.py'            # 当脚本修改时触发
-      - '.github/workflows/search_zhihu.yml'    # 当工作流文件修改时触发
+      - 'search_zhihu.py'
+      - '.github/workflows/search_zhihu.yml'
   schedule:
-    - cron: '0 2 * * *'             # 每天定时运行
-  workflow_dispatch:                 # 保留手动触发按钮
+    - cron: '0 2 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,7 +25,10 @@ jobs:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install playwright
+          # 安装系统级依赖库
+          python -m playwright install --with-deps chromium
 
       - name: Run search script
         run: python search_zhihu.py
@@ -34,8 +37,11 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
+          
+          # 确保 data 目录存在，防止 git add 失败
+          mkdir -p data
           git add data/
-          # 检查是否有内容变更，避免空提交报错
+          
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
