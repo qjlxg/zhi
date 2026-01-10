@@ -1,0 +1,38 @@
+name: n_strategy_analyzer
+
+on:
+  schedule:
+    # 每天北京时间 15:35 运行 (UTC 07:35)
+    - cron: '52 7 * * *'
+  workflow_dispatch: # 支持手动触发
+  push:
+    paths:
+      - 'n_strategy_analyzer.py'
+      - '.github/workflows/n_strategy_analyzer.yml'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas joblib
+
+      - name: Run N-Strategy Analyzer
+        run: python n_strategy_analyzer.py
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          git commit -m "Auto-analysis: N-Strategy Result $(date +'%Y-%m-%d %H:%M')" || exit 0
+          git push
