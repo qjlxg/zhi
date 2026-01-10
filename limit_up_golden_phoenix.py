@@ -5,14 +5,14 @@ from datetime import datetime
 import multiprocessing as mp
 
 # ==============================================================================
-# 战法名称：涨停金凤凰 (Limit Up Golden Phoenix) - 完整实战版
+# 战法名称：涨停金凤凰 (Limit Up Golden Phoenix) - 五星精选版
 # 
 # 【战法逻辑说明】：
 # 1. 核心定义：寻找近期出现过涨停（涨幅 >= 9.8%）的领涨标的。
-# 2. 支撑逻辑：涨停后的“炸板”或“横盘”期间，每日收盘价严禁有效跌破涨停当日最高价。
-# 3. 缩量核心：洗盘期间成交量必须缩减（地量），证明主力筹码锁定，无出货意愿。
-# 4. 择时优化：选取涨停后 2-7 天的标的，避开过早（未洗完）或过晚（动力衰竭）。
-# 5. 回测驱动：通过历史数据计算该股“股性”，只有历史表现好的股才会被标记为“高强度”。
+# 2. 支撑逻辑：涨停后横盘期间，收盘价严禁跌破涨停当日最高价（误差 < 0.5%）。
+# 3. 缩量核心：洗盘成交量必须萎缩至涨停日的 60% 以下，地量代表筹码锁定。
+# 4. 择时优化：选取涨停后 2-7 天的标的，这是二次起爆的黄金窗口。
+# 5. 优加选优：【核心变更】脚本仅输出历史回测胜率 >= 60% 的 5 星标的。
 # ==============================================================================
 
 DATA_DIR = './stock_data'
@@ -35,21 +35,21 @@ def analyze_logic(file_path):
         cur_close = latest['收盘']
         if not (5.0 <= cur_close <= 20.0): return None
 
-        # 2. 识别涨停信号
+        # 2. 识别历史所有涨停信号用于回测
         df['is_limit_up'] = df['涨跌幅'] >= 9.8
         limit_indices = df[df['is_limit_up']].index
         if limit_indices.empty: return None
         
-        # 3. 历史回测部分：计算该战法在历史上的表现
+        # 3. 历史回测部分：计算该股的历史“股性”
         success_count = 0
         total_signals = 0
         for idx in limit_indices:
-            # 确保涨停后有足够数据进行回测统计 (至少看5天)
+            # 确保涨停后有足够数据进行回测统计 (观察后续5-8天)
             if idx + 8 >= len(df): continue
             
             h = df.loc[idx, '最高']
             v = df.loc[idx, '成交量']
-            # 模拟：涨停后3天内不破位且缩量
+            # 模拟历史：涨停后3天内不破位且缩量
             obs = df.loc[idx+1 : idx+3]
             if obs['收盘'].min() >= h * 0.99 and obs['成交量'].max() < v * 0.7:
                 total_signals += 1
@@ -58,7 +58,12 @@ def analyze_logic(file_path):
                 if (post_max - buy_price) / buy_price >= 0.05: # 5%涨幅算成功
                     success_count += 1
         
-        win_rate = success_count / total_signals if total_signals > 0 else 0.0
+        win_rate_val = success_count / total_signals if total_signals > 0 else 0.0
+
+        # --- 【强制过滤逻辑】 ---
+        # 只有历史胜率 >= 60% 且至少出现过一次成功案例的才进入 5 星池
+        if win_rate_val < 0.6 or total_signals == 0:
+            return None
 
         # 4. 今日实时形态检测
         last_idx = limit_indices[-1]
@@ -73,19 +78,11 @@ def analyze_logic(file_path):
         
         # 形态校验：收盘价站稳支撑位 且 当前是缩量的
         is_supported = after_limit_df['收盘'].min() >= (limit_high * 0.995)
-        is_vol_shrink = latest['成交量'] < (limit_vol * 0.6) # 当前量不到涨停量的60%
+        is_vol_shrink = latest['成交量'] < (limit_vol * 0.6) 
         
         if is_supported and is_vol_shrink:
-            # 5. 自动复盘分级与操作建议
-            if win_rate >= 0.6:
-                strength = "⭐⭐⭐⭐⭐ [一击必中]"
-                advice = "该股历史爆发力极强！缩量回踩完毕，建议现价或回踩支撑位分批建仓。"
-            elif win_rate >= 0.4:
-                strength = "⭐⭐⭐⭐ [积极观察]"
-                advice = "形态非常标准，历史胜率尚可。可小仓位试错。"
-            else:
-                strength = "⭐⭐ [形态观察]"
-                advice = "形态符合但该股历史胜率一般，建议等待放量起爆瞬间再介入。"
+            strength = "⭐⭐⭐⭐⭐ [一击必中]"
+            advice = f"该股历史表现极佳(胜率{win_rate_val:.1%})！目前缩量至{latest['成交量']/limit_vol:.1%}，建议分批介入。"
 
             return {
                 "代码": code,
@@ -94,7 +91,7 @@ def analyze_logic(file_path):
                 "支撑位": limit_high,
                 "缩量占比": f"{(latest['成交量']/limit_vol):.1%}",
                 "横盘天数": days_count,
-                "历史胜率": f"{win_rate:.1%}",
+                "历史胜率": f"{win_rate_val:.1%}",
                 "买入信号强度": strength,
                 "全自动复盘建议": advice
             }
@@ -103,38 +100,31 @@ def analyze_logic(file_path):
         return None
 
 def main():
-    # 获取 stock_data 目录下所有 CSV 文件
     if not os.path.exists(DATA_DIR):
         print(f"错误: 找不到目录 {DATA_DIR}")
         return
 
     files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) if f.endswith('.csv')]
-    print(f"正在分析 {len(files)} 只股票，采用并行计算方案...")
+    print(f"正在全量扫描 {len(files)} 只股票，仅筛选 5 星‘一击必中’标的...")
 
-    # 并行处理
     with mp.Pool(processes=mp.cpu_count()) as pool:
         results = pool.map(analyze_logic, files)
     
-    # 过滤空结果
     results = [r for r in results if r is not None]
     
     if results:
         final_df = pd.DataFrame(results)
         
-        # 关联股票名称
         if os.path.exists(NAMES_FILE):
             names_df = pd.read_csv(NAMES_FILE)
-            # 统一代码格式为6位字符串
             names_df['code'] = names_df['code'].astype(str).str.zfill(6)
             final_df = pd.merge(final_df, names_df, left_on='代码', right_on='code', how='left')
-            # 整理列顺序
             cols = ['代码', 'name', '现价', '支撑位', '横盘天数', '缩量占比', '历史胜率', '买入信号强度', '全自动复盘建议']
             final_df = final_df[cols].rename(columns={'name': '股票名称'})
         
-        # 排序：按历史胜率和缩量占比优选
+        # 5 星级内部按胜率和缩量程度再次排序
         final_df = final_df.sort_values(by=['历史胜率', '缩量占比'], ascending=[False, True])
 
-        # 保存到年月目录
         now = datetime.now()
         dir_path = now.strftime('%Y-%m')
         os.makedirs(dir_path, exist_ok=True)
@@ -143,9 +133,10 @@ def main():
         out_file = os.path.join(dir_path, f"limit_up_golden_phoenix_{timestamp}.csv")
         
         final_df.to_csv(out_file, index=False, encoding='utf-8-sig')
-        print(f"成功筛选出 {len(final_df)} 只符合‘金凤凰’战法的股票。结果已保存至 {out_file}")
+        print(f"🔥 复盘完成！今日发现 {len(final_df)} 只 5 星级标的。")
+        print(final_df[['代码', '股票名称', '历史胜率', '缩量占比']].to_string(index=False))
     else:
-        print("今日未发现符合战法逻辑的股票，建议空仓休息。")
+        print("💡 今日未发现 5 星级‘一击必中’标的，建议空仓或观察 4 星以下品种。")
 
 if __name__ == "__main__":
     main()
