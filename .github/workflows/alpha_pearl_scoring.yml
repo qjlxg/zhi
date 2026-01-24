@@ -1,0 +1,48 @@
+name: alpha_pearl_scoring_daily
+
+on:
+  workflow_dispatch:        # 支持手动触发
+  push:
+    paths:
+      - 'alpha_pearl_scoring.py'      # 当脚本变动时自动运行
+      - '.github/workflows/alpha_pearl_scoring.yml' # 当工作流配置变动时自动运行
+  schedule:
+    - cron: '30 8 * * 1-5'  # 每个交易日北京时间 16:30 自动运行
+
+jobs:
+  pearl_scoring_job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas numpy
+
+      - name: Run Alpha Pearl Scoring
+        run: |
+          # 运行脚本，确保脚本名正确
+          python alpha_pearl_scoring.py
+
+      - name: Upload Alpha Pearl Ranking
+        uses: actions/upload-artifact@v3
+        with:
+          name: alpha_pearl_scoring_report
+          # 匹配脚本生成的 csv 文件名
+          path: alpha_pearl_scoring_*.csv
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "PearlBot"
+          # 创建统一的归档目录
+          mkdir -p results/alpha_pearl_scoring/
+          # 移动生成的评分文件
+          mv alpha_pearl_scoring_*.csv results/alpha_pearl_scoring/
+          git add results/alpha_pearl_scoring/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Update Alpha Pearl Scoring Result" && git push)
