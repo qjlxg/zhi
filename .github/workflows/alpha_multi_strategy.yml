@@ -7,34 +7,62 @@ on:
       - 'alpha_safety_moat.py'
       - 'alpha_limit_assault.py'
       - 'alpha_bull_pullback.py'
-      
       - '.github/workflows/alpha_multi_strategy.yml'
   schedule:
-    - cron: '45 8 * * 1-5'  # 每个交易日收盘后自动运行
+    - cron: '45 8 * * 1-5'  # 北京时间 16:45 运行
 
 jobs:
   run_strategies:
     runs-on: ubuntu-latest
+    # 赋予权限以允许 Action 推送代码回仓库
+    permissions:
+      contents: write
+      
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # 必须获取全部历史以便 rebase
+          fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
+
       - name: Install Dependencies
         run: pip install pandas numpy
-      - name: Run All Strategies
+
+      - name: Execute Strategies
         run: |
+          # 使用 || true 或 echo 确保单脚本无结果时不退出整个 Job
+          echo "开始运行：牛回头脚本..."
+          python alpha_bull_pullback.py || echo "bull_pullback 无匹配标的"
           
-         
-          python alpha_bull_pullback.py
-          python alpha_limit_assault.py
-          python alpha_safety_moat.py
+          echo "开始运行：涨停突击脚本..."
+          python alpha_limit_assault.py || echo "limit_assault 无匹配标的"
+          
+          echo "开始运行：安全护城河脚本..."
+          python alpha_safety_moat.py || echo "safety_moat 无匹配标的"
+
       - name: Commit and Push Results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "AlphaBot"
+          
+          # 创建结果目录
           mkdir -p results/strategies/
-          mv alpha_*_report_*.csv results/strategies/ || true
-          git add results/strategies/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Update Strategy Reports" && git push)
+          
+          # 检查当前目录下是否有生成的 csv 文件
+          if ls alpha_*_report_*.csv 1> /dev/null 2>&1; then
+            echo "发现新报告，正在整理..."
+            mv alpha_*_report_*.csv results/strategies/
+            git add results/strategies/
+            
+            # 使用 pull --rebase 避免多人操作或并发冲突
+            git pull --rebase origin main
+            git commit -m "Auto: 更新战法共振报告 (发现新标的)"
+            git push origin main
+          else
+            echo "今日扫描结束：未发现符合严格条件的共振标的，跳过提交。"
+          fi
