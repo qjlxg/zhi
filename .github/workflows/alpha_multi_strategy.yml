@@ -4,33 +4,37 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'alpha_*.py'
+      - 'alpha_safety_moat.py'
+      - 'alpha_limit_assault.py'
+      - 'alpha_bull_pullback.py'
+      
+      - '.github/workflows/alpha_multi_strategy.yml'
   schedule:
-    - cron: '45 8 * * 1-5'  # 16:45 运行
+    - cron: '45 8 * * 1-5'  # 每个交易日收盘后自动运行
 
 jobs:
-  run_all:
+  run_strategies:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-      - name: Install
+      - name: Install Dependencies
         run: pip install pandas numpy
-      - name: Run Strategies
+      - name: Run All Strategies
         run: |
-          # 确保这几个脚本都在你的根目录下
           
+         
           python alpha_bull_pullback.py
           python alpha_limit_assault.py
           python alpha_safety_moat.py
-      - name: Save Results
+      - name: Commit and Push Results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "AlphaBot"
           mkdir -p results/strategies/
-          mv alpha_*_report_*.csv results/strategies/
+          mv alpha_*_report_*.csv results/strategies/ || true
           git add results/strategies/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Multi-Strategy Reports" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Update Strategy Reports" && git push)
