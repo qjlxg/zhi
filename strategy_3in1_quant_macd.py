@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 # --- 核心配置 ---
 DATA_DIR = 'stock_data'
 NAMES_FILE = 'stock_names.csv'
-STRATEGY_NAME = 'alpha_3in1_bottom'
+STRATEGY_NAME = 'alpha_3in1_bottom_macd'
 
 def is_main_board_sh_sz(code):
     code = str(code).zfill(6)
