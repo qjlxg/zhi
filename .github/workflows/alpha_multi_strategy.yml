@@ -1,0 +1,36 @@
+name: alpha_multi_strategy_daily
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'alpha_*.py'
+  schedule:
+    - cron: '45 8 * * 1-5'  # 16:45 运行
+
+jobs:
+  run_all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Install
+        run: pip install pandas numpy
+      - name: Run Strategies
+        run: |
+          # 确保这几个脚本都在你的根目录下
+          
+          python alpha_bull_pullback.py
+          python alpha_limit_assault.py
+          python alpha_safety_moat.py
+      - name: Save Results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "AlphaBot"
+          mkdir -p results/strategies/
+          mv alpha_*_report_*.csv results/strategies/
+          git add results/strategies/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Multi-Strategy Reports" && git push)
