@@ -30,7 +30,7 @@ jobs:
           python alpha_pearl_scoring.py
 
       - name: Upload Alpha Pearl Ranking
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: alpha_pearl_scoring_report
           # 匹配脚本生成的 csv 文件名
