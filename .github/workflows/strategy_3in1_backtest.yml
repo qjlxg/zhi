@@ -1,27 +1,43 @@
 name: strategy_3in1_backtest
 
 on:
-  workflow_dispatch: # 支持手动点击 Run Workflow 按钮运行
+  # 1. 定时触发：每周日北京时间凌晨 08:00 (UTC 00:00) 自动跑一遍大复盘
   schedule:
-    - cron: '0 0 * * 0' # 每周日运行一次，复盘本周
+    - cron: '0 0 * * 0' 
+  
+  # 2. 手动触发：支持在 Actions 页面手动点击运行
+  workflow_dispatch: 
+
+  # 3. 自动触发：当脚本或工作流文件变动时自动运行
+  push:
+    paths:
+      - 'strategy_3in1_backtest.py'
+      - '.github/workflows/strategy_3in1_backtest.yml'
 
 jobs:
-  backtest:
+  backtest_and_stat:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v3
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      - name: Run Backtest
+
+      - name: Install Dependencies
+        run: pip install pandas numpy
+
+      - name: Run Full Backtest Logic
+        # 运行后会打印 1,3,5,10,20,30,60天胜率表并生成 ledger.csv
+        run: python strategy_3in1_backtest.py
+
+      - name: Commit Backtest Ledger
         run: |
-          pip install pandas numpy
-          python strategy_3in1_backtest.py
-      - name: Store Ledger
-        run: |
-          git config --local user.email "action@github.com"
+          git config --local user.email "backtest-bot@github.com"
           git config --local user.name "BacktestBot"
+          # 确保 backtest_results 目录存在（脚本中已处理，这里 add 即可）
           git add backtest_results/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Backtest Ledger" && git push)
+          # 检查是否有更新，有则提交，无则跳过
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Backtest Ledger & Stats: $(date +'%Y-%m-%d')" && git push)
