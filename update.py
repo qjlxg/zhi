@@ -10,28 +10,23 @@ DATA_DIR = 'stock_data'
 PROGRESS_DIR = 'results_data_update'
 PROGRESS_FILE = os.path.join(PROGRESS_DIR, 'progress.txt')
 STOCK_LIST_FILE = '列表.txt'
-BATCH_SIZE = 300 
+BATCH_SIZE = 100 # GitHub环境建议先设小一点，稳定后再调大
 
-# 备选服务器列表 (涵盖深圳、上海、武汉等核心节点)
+# 备选服务器列表
 TDX_SERVERS = [
-    ('119.147.212.81', 7709),  # 深圳主站
-    ('115.238.90.165', 7709),  # 浙江电信
-    ('218.75.126.9', 7709),    # 杭州电信
-    ('124.160.9.155', 7709),   # 浙江联通
-    ('61.153.209.139', 7709),  # 宁波电信
-    ('183.60.224.178', 7709),  # 广州电信
+    ('183.60.224.178', 7709),
+    ('115.238.90.165', 7709),
+    ('119.147.212.81', 7709),
+    ('218.75.126.9', 7709),
 ]
 
 def get_best_server():
-    """遍历服务器列表，寻找响应最快的节点"""
     best_ip = None
     min_latency = float('inf')
-    
     print("开始测试通达信服务器延迟...")
     for ip, port in TDX_SERVERS:
         start_time = time.time()
         try:
-            # 设置 2 秒超时，防止在 Action 环境中挂死
             conn = socket.create_connection((ip, port), timeout=2)
             latency = time.time() - start_time
             print(f"📡 {ip}:{port} - 延迟: {latency:.3f}s")
@@ -41,13 +36,12 @@ def get_best_server():
             conn.close()
         except Exception:
             print(f"❌ {ip}:{port} - 连接超时/失败")
-            
     return best_ip
 
 def fetch_tdx_data(code, api):
-    """(保持原有逻辑)"""
     market = 1 if code.startswith('6') else 0
     try:
+        # 获取2条数据计算涨跌
         data = api.get_security_bars(9, market, code, 0, 2)
         if not data or len(data) < 1: return pd.DataFrame()
         
@@ -76,8 +70,15 @@ def fetch_tdx_data(code, api):
         return pd.DataFrame()
 
 def main():
+    # 强制确保所有目录存在 (修复 FileNotFoundError)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(PROGRESS_DIR, exist_ok=True)
+
     # 1. 加载股票列表
     try:
+        if not os.path.exists(STOCK_LIST_FILE):
+            print(f"找不到 {STOCK_LIST_FILE}")
+            sys.exit(1)
         stock_df = pd.read_csv(STOCK_LIST_FILE, sep='\t')
         stock_df.columns = stock_df.columns.str.strip().str.lower()
         code_col = '代码' if '代码' in stock_df.columns else 'code'
@@ -92,7 +93,9 @@ def main():
     start_index = 0
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, 'r') as f:
-            try: start_index = int(f.read().strip())
+            try:
+                line = f.read().strip()
+                start_index = int(line) if line else 0
             except: start_index = 0
 
     if start_index >= len(codes):
@@ -100,20 +103,20 @@ def main():
         with open(PROGRESS_FILE, 'w') as f: f.write('0')
         sys.exit(0)
 
-    # 3. 寻找最快服务器并连接
+    # 3. 寻找并连接服务器
     best_server_ip = get_best_server()
     if not best_server_ip:
-        print("❌ 无法连接任何通达信服务器，请检查 GitHub Action 网络环境。")
+        print("❌ 无法连接任何服务器")
         sys.exit(1)
 
     api = TdxHq_API()
     if not api.connect(best_server_ip, 7709):
-        print(f"❌ 尝试连接最快服务器 {best_server_ip} 失败")
         sys.exit(1)
 
-    # 4. 执行更新 (逻辑同上)
+    # 4. 执行更新
     end_index = min(start_index + BATCH_SIZE, len(codes))
     current_batch = codes[start_index:end_index]
+    print(f"正在处理批次: {start_index} -> {end_index}")
 
     for code in current_batch:
         df_new = fetch_tdx_data(code, api)
@@ -126,17 +129,18 @@ def main():
                 combined.to_csv(file_path, index=False)
             else:
                 df_new.to_csv(file_path, index=False)
-            print(f"√ {code}", end=' ')
+            print(f"√ {code}", end=' ', flush=True) # 增加 flush=True 实时打印
     
     api.disconnect()
 
-    # 5. 保存进度与退出
-    with open(PROGRESS_FILE, 'w') as f: f.write(str(end_index))
+    # 5. 保存进度 (已在 main 开始处确保目录存在)
+    with open(PROGRESS_FILE, 'w') as f:
+        f.write(str(end_index))
+    
+    print(f"\n当前批次保存成功。")
     if end_index < len(codes):
-        print(f"\n进度: {end_index}/{len(codes)}，分批继续...")
         sys.exit(99)
     else:
-        print("\n更新任务全部完成！")
         sys.exit(0)
 
 if __name__ == "__main__":
