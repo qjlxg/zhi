@@ -33,13 +33,14 @@ jobs:
         with:
           python-version: '3.12'
 
-     
+      # 3. 安装必要依赖 (智研平台使用 requests 库)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas requests tqdm
 
-     
+      # 4. 运行股票数据更新脚本
+      # 脚本若返回 exit 99 则表示还有剩余数据需要处理
       - name: Run stock data update script
         id: run_script
         run: |
