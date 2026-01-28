@@ -1,98 +1,126 @@
 import pandas as pd
 import os
 import time
-import requests
 import sys
+from pytdx.hq import TdxHq_API
 
 # --- 常量配置 ---
 DATA_DIR = 'stock_data'
+PROGRESS_DIR = 'results_data_update'
+PROGRESS_FILE = os.path.join(PROGRESS_DIR, 'progress.txt')
 STOCK_LIST_FILE = '列表.txt'
-# 新浪接口必须带上这个 Referer，否则会被拒绝访问
-HEADERS = {
-    'Referer': 'http://finance.sina.com.cn',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-}
+BATCH_SIZE = 300  # Pytdx 速度快，但为了 Action 稳定性，建议设在 300-500
+TDX_SERVER = '119.147.212.81' # 也可以换成其他通达信服务器 IP
 
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(PROGRESS_DIR, exist_ok=True)
 
-def fetch_sina_data(code):
-    """从新浪财经获取免费实时行情数据"""
-    # 转换代码格式：上海 6 开头加 sh，深圳其他加 sz
-    full_code = f"sh{code}" if code.startswith('6') else f"sz{code}"
-    url = f"http://hq.sinajs.cn/list={full_code}"
+def fetch_tdx_data(code, api):
+    """使用 Pytdx 获取日线数据"""
+    # 市场判定：6开头为沪市(1)，其他(0、3等)为深市(0)
+    market = 1 if code.startswith('6') else 0
     
     try:
-        # 新浪接口返回的是 gbk 编码的字符串
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        content = response.text
+        # 获取最近 2 天的数据，确保能拿到昨收来计算涨跌
+        # 9 为日线
+        data = api.get_security_bars(9, market, code, 0, 2)
         
-        if '"' not in content or len(content.split(',')) < 30:
+        if not data or len(data) < 1:
             return pd.DataFrame()
         
-        # 解析 JavaScript 变量格式
-        raw_data = content.split('"')[1].split(',')
+        # 转换为 DataFrame
+        df_raw = pd.DataFrame(data)
         
-        # 对应新浪字段：1开盘, 2昨收, 3现价(收盘), 4最高, 5最低, 8成交量, 9成交额, 30日期
-        data = {
-            '日期': raw_data[30],
+        # 取最新的一行数据
+        curr = df_raw.iloc[-1]
+        
+        # 计算逻辑
+        # 如果只有一条数据，涨跌额设为 0；如果有两条，则用最新收盘减去上一日收盘
+        prev_close = df_raw.iloc[0]['close'] if len(df_raw) > 1 else curr['close']
+        
+        row = {
+            '日期': pd.to_datetime(curr['datetime']).strftime('%Y-%m-%d'),
             '股票代码': code,
-            '开盘': float(raw_data[1]),
-            '收盘': float(raw_data[3]),
-            '最高': float(raw_data[4]),
-            '最低': float(raw_data[5]),
-            '成交量': int(raw_data[8]),
-            '成交额': float(raw_data[9]),
+            '开盘': float(curr['open']),
+            '收盘': float(curr['close']),
+            '最高': float(curr['high']),
+            '最低': float(curr['low']),
+            '成交量': int(curr['vol']),
+            '成交额': float(curr['amount']),
+            '涨跌额': round(curr['close'] - prev_close, 2),
+            '涨跌幅': round((curr['close'] - prev_close) / prev_close * 100, 2) if prev_close != 0 else 0,
+            '振幅': round((curr['high'] - curr['low']) / prev_close * 100, 2) if prev_close != 0 else 0,
+            '换手率': 0.0 # 基础 K 线接口不带换手率，此处占位
         }
         
-        # 补充计算字段 (匹配你的12列格式)
-        prev_close = float(raw_data[2])
-        data['涨跌额'] = round(data['收盘'] - prev_close, 2)
-        data['涨跌幅'] = round((data['涨跌额'] / prev_close * 100), 2) if prev_close != 0 else 0
-        data['振幅'] = round((data['最高'] - data['最低']) / prev_close * 100, 2) if prev_close != 0 else 0
-        data['换手率'] = 0.0 # 免费接口不提供，设为默认值
-        
-        df = pd.DataFrame([data])
-        # 调整列顺序
+        res_df = pd.DataFrame([row])
         cols = ['日期', '股票代码', '开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌幅', '涨跌额', '换手率']
-        return df[cols]
-    except Exception as e:
+        return res_df[cols]
+    except:
         return pd.DataFrame()
 
 def main():
-    # 1. 加载并过滤列表
+    # 1. 加载股票列表
     try:
         stock_df = pd.read_csv(STOCK_LIST_FILE, sep='\t')
         stock_df.columns = stock_df.columns.str.strip().str.lower()
         code_col = '代码' if '代码' in stock_df.columns else 'code'
         stock_df[code_col] = stock_df[code_col].astype(str).str.zfill(6)
-        
-        # 过滤逻辑：跳过 300, 301, 688
+        # 过滤掉创业板和科创板
         stock_list = stock_df[~stock_df[code_col].str.startswith(('300', '301', '688'))]
-        print(f"列表加载成功，共 {len(stock_list)} 只主板股票。")
+        codes = stock_list[code_col].tolist()
     except Exception as e:
         print(f"读取列表失败: {e}")
         return
 
-    # 2. 循环处理
-    for _, row in stock_list.iterrows():
-        code = row[code_col]
-        df_new = fetch_sina_data(code)
-        
+    # 2. 读取进度
+    start_index = 0
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, 'r') as f:
+            try:
+                start_index = int(f.read().strip())
+            except: start_index = 0
+
+    if start_index >= len(codes):
+        print("所有数据已是最新，重置进度。")
+        with open(PROGRESS_FILE, 'w') as f: f.write('0')
+        return
+
+    # 3. 连接 Pytdx
+    api = TdxHq_API()
+    if not api.connect(TDX_SERVER, 7709):
+        print("连接通达信服务器失败")
+        return
+
+    # 4. 执行更新
+    end_index = min(start_index + BATCH_SIZE, len(codes))
+    current_batch = codes[start_index:end_index]
+
+    for code in current_batch:
+        df_new = fetch_tdx_data(code, api)
         if not df_new.empty:
             file_path = os.path.join(DATA_DIR, f"{code}.csv")
-            # 如果存在旧文件则追加并去重
             if os.path.exists(file_path):
                 old_df = pd.read_csv(file_path)
+                old_df['股票代码'] = old_df['股票代码'].astype(str).str.zfill(6)
                 combined = pd.concat([old_df, df_new]).drop_duplicates(subset=['日期'], keep='last')
                 combined.to_csv(file_path, index=False)
             else:
                 df_new.to_csv(file_path, index=False)
-            print(f"√ {code} 已更新", end=' | ')
-        else:
-            print(f"× {code} 获取失败", end=' | ')
+            print(f"√ {code}", end=' ')
         
-        # 免费接口也建议稍微留一点延迟
-        time.sleep(0.1)
+    api.disconnect()
+
+    # 5. 保存进度与退出
+    with open(PROGRESS_FILE, 'w') as f:
+        f.write(str(end_index))
+
+    if end_index < len(codes):
+        print(f"\n进度: {end_index}/{len(codes)}，准备重启下一批次...")
+        sys.exit(99)
+    else:
+        print("\n今日主板数据更新全部完成！")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
