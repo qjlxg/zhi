@@ -1,4 +1,4 @@
-name: strategy_3in1_quant
+name: strategy_3in1_quant—macd
 
 on:
   schedule:
