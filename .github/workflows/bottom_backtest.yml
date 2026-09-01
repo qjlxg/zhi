@@ -1,0 +1,29 @@
+name: strategy_bottom_backtest
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'strategy_3in1_bottom_backtest.py'
+      - '.github/workflows/bottom_backtest.yml'
+  schedule:
+    - cron: '30 0 * * 0' # 每周日 08:30 运行
+
+jobs:
+  run_backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Run
+        run: |
+          pip install pandas numpy
+          python strategy_3in1_bottom_backtest.py
+      - name: Commit
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "BacktestBot"
+          git add backtest_results/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Bottom Backtest" && git push)
